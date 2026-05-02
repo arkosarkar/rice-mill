@@ -118,6 +118,9 @@ function InvoicePreview({ mill, sale }) {
   const invNo = sale.invoiceNo || sale.invoice_no;
   const invDate = sale.invoiceDate || sale.invoice_date;
   const custName = sale.customerName || sale.customer_name;
+  const custGst = sale.gstNumber || sale.gst_number;
+  const custContact = sale.contactNumber || sale.contact_number;
+  const custAddress = sale.address || sale.billing_address || sale.billingAddress;
   const balanceDue = toNumber(sale.balanceDue || sale.balance_due);
 
   return (
@@ -141,9 +144,9 @@ function InvoicePreview({ mill, sale }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
         <div style={{ background: '#f5f6fa', borderRadius: 8, padding: '12px 16px' }}>
           <div style={{ fontWeight: 700, color: '#1565c0', marginBottom: 6, fontSize: 12, textTransform: 'uppercase' }}>Bill To (Buyer)</div>
-          <div style={{ fontWeight: 700, fontSize: 15 }}>{sale.customerName || 'Cash Customer'}</div>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{custName || 'Cash Customer'}</div>
           <div style={{ color: '#555', marginTop: 4, fontSize: 12, lineHeight: 1.6 }}>
-            {sale.address || 'Address not provided'}<br />📞 {sale.contactNumber || '-'}<br />GSTIN: {sale.gstNumber || 'Unregistered'}
+            {custAddress || 'Address not provided'}<br />📞 {custContact || '-'}<br />GSTIN: {custGst || 'Unregistered'}
           </div>
         </div>
         <div style={{ background: '#f5f6fa', borderRadius: 8, padding: '12px 16px' }}>
