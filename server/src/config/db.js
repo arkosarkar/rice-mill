@@ -6,8 +6,8 @@ const pool = new Pool({
   ssl: {
     rejectUnauthorized: false
   },
-  connectionTimeoutMillis: 10000, // 10 seconds to connect
-  idleTimeoutMillis: 30000,       // 30 seconds idle before close
+  connectionTimeoutMillis: 30000, // 30 seconds to connect
+  idleTimeoutMillis: 60000,       // 60 seconds idle before close
 });
 
 /**
