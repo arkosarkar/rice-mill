@@ -161,9 +161,9 @@ function InvoicePreview({ mill, sale }) {
             <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0' }}>1</td>
             <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0' }}><strong>{sale.variety || ''} {sale.riceType || sale.saleType || sale.sale_type || 'Rice'}</strong></td>
             <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0' }}>{sale.hsnSac || sale.hsn_sac || '1006'}</td>
-            <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0', textAlign: 'right' }}>{toNumber(sale.quantityKg).toFixed(2)}</td>
+            <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0', textAlign: 'right' }}>{toNumber(sale.quantity_kg || sale.quantityKg).toFixed(2)}</td>
             <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0', textAlign: 'right' }}>{sale.bags || '-'}</td>
-            <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0', textAlign: 'right' }}>{fmt(sale.ratePerKg)}</td>
+            <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0', textAlign: 'right' }}>{fmt(sale.rate_per_kg || sale.ratePerKg)}</td>
             <td style={{ padding: '10px 12px', borderBottom: '1px solid #e0e0e0', textAlign: 'right', fontWeight: 600 }}>{fmt(taxable)}</td>
           </tr>
         </tbody>
