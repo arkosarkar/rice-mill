@@ -97,16 +97,20 @@ const EMPTY_FORM = {
 
 // ─── INVOICE PREVIEW ──────────────────────────────────────────────────────────
 function InvoicePreview({ mill, sale }) {
-  const taxable = toNumber(sale.taxable_value || sale.totalAmount);
-  // Default parsing for forms lacking direct db-keys
+  const taxable = toNumber(sale.taxable_value || sale.taxableValue || sale.totalAmount || sale.total_amount);
   const isLocal = (sale.customerState || sale.customer_state || 'West Bengal').trim().toLowerCase() === 'west bengal';
-  const gstRate = toNumber(sale.taxPercent);
-  const gst = toNumber(sale.taxAmount || (taxable * gstRate / 100));
+  const gstRate = toNumber(sale.taxPercent || sale.tax_percent);
+  const gst = toNumber(sale.taxAmount || sale.tax_amount || (taxable * gstRate / 100));
   
-  const cgst = sale.cgst_amount !== undefined ? toNumber(sale.cgst_amount) : (isLocal ? gst / 2 : 0);
-  const sgst = sale.sgst_amount !== undefined ? toNumber(sale.sgst_amount) : (isLocal ? gst / 2 : 0);
-  const igst = sale.igst_amount !== undefined ? toNumber(sale.igst_amount) : (isLocal ? 0 : gst);
+  const cgst = sale.cgst_amount !== undefined ? toNumber(sale.cgst_amount) : (sale.cgst !== undefined ? toNumber(sale.cgst) : (isLocal ? gst / 2 : 0));
+  const sgst = sale.sgst_amount !== undefined ? toNumber(sale.sgst_amount) : (sale.sgst !== undefined ? toNumber(sale.sgst) : (isLocal ? gst / 2 : 0));
+  const igst = sale.igst_amount !== undefined ? toNumber(sale.igst_amount) : (sale.igst !== undefined ? toNumber(sale.igst) : (isLocal ? 0 : gst));
   const isRcm = sale.isRcm || sale.is_rcm || false;
+  const grandTotal = toNumber(sale.grandTotal || sale.grand_total);
+  const invNo = sale.invoiceNo || sale.invoice_no;
+  const invDate = sale.invoiceDate || sale.invoice_date;
+  const custName = sale.customerName || sale.customer_name;
+  const balanceDue = toNumber(sale.balanceDue || sale.balance_due);
 
   return (
     <div id="invoice-print-area" style={{ fontFamily: 'Arial, sans-serif', fontSize: 13, color: '#222', background: '#fff', padding: 32, maxWidth: 720, margin: '0 auto' }}>
@@ -138,7 +142,7 @@ function InvoicePreview({ mill, sale }) {
           <div style={{ fontWeight: 700, color: '#1565c0', marginBottom: 6, fontSize: 12, textTransform: 'uppercase' }}>Invoice Details</div>
           <table style={{ width: '100%', fontSize: 12 }}>
             <tbody>
-              {[['Invoice No', sale.invoiceNo], ['Date', sale.invoiceDate ? new Date(sale.invoiceDate).toLocaleDateString('en-IN') : '-'], ['Payment Mode', sale.paymentMode || 'Cash'], ['Reverse Charge (RCM)', isRcm ? 'YES' : 'NO'], ['Place of Supply', sale.customerState || sale.customer_state || 'West Bengal']].map(([k, v]) => (
+              {[['Invoice No', invNo], ['Date', invDate ? new Date(invDate).toLocaleDateString('en-IN') : '-'], ['Payment Mode', sale.paymentMode || sale.payment_mode || 'Cash'], ['Reverse Charge (RCM)', isRcm ? 'YES' : 'NO'], ['Place of Supply', sale.customerState || sale.customer_state || 'West Bengal']].map(([k, v]) => (
                 <tr key={k}><td style={{ padding: '3px 0', color: '#666' }}>{k}</td><td style={{ padding: '3px 0', fontWeight: 600, textAlign: 'right' }}>{v}</td></tr>
               ))}
             </tbody>
@@ -213,15 +217,15 @@ function InvoicePreview({ mill, sale }) {
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '2px solid #4caf50', paddingTop: 10, marginTop: 6 }}>
             <span style={{ fontWeight: 800, fontSize: 16 }}>GRAND TOTAL</span>
-            <span style={{ fontWeight: 900, fontSize: 20, color: '#2e7d32' }}>{fmt(sale.grandTotal)}</span>
+            <span style={{ fontWeight: 900, fontSize: 20, color: '#2e7d32' }}>{fmt(grandTotal)}</span>
           </div>
-          {toNumber(sale.balanceDue) > 0 && (
+          {balanceDue > 0 && (
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, padding: '6px 10px', background: '#ffebee', borderRadius: 6 }}>
               <span style={{ color: '#c62828', fontWeight: 700 }}>Balance Due</span>
-              <span style={{ color: '#c62828', fontWeight: 700 }}>{fmt(sale.balanceDue)}</span>
+              <span style={{ color: '#c62828', fontWeight: 700 }}>{fmt(balanceDue)}</span>
             </div>
           )}
-          <div style={{ fontSize: 11, color: '#888', marginTop: 8, fontStyle: 'italic' }}>{amountInWords(toNumber(sale.grandTotal))}</div>
+          <div style={{ fontSize: 11, color: '#888', marginTop: 8, fontStyle: 'italic' }}>{amountInWords(grandTotal)}</div>
         </div>
       </div>
 
