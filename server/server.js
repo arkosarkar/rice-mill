@@ -95,6 +95,29 @@ async function start() {
       console.log('✅ First admin user seeded successfully.');
     }
 
+    // 3. Initialize Standard Ledgers
+    console.log('⏳ Initializing standard accounting ledgers...');
+    const standardLedgers = [
+      { name: 'Paddy Purchase A/C', group: 'Purchases' },
+      { name: 'Sales Account', group: 'Sales' },
+      { name: 'GST Payable', group: 'Current Liabilities' },
+      { name: 'Input GST A/C', group: 'Current Assets' },
+      { name: 'Deductions & Commission A/C', group: 'Indirect Incomes' },
+      { name: 'Direct Labour - Cleaning', group: 'Direct Expenses' },
+      { name: 'Electricity/Fuel Expense', group: 'Power & Fuel' },
+      { name: 'Cash in Hand', group: 'Assets' },
+      { name: 'SBI - Main Account', group: 'Bank Accounts' },
+      { name: 'Capital Account', group: 'Capital Account' }
+    ];
+    for (const l of standardLedgers) {
+      await sql`
+        INSERT INTO ledgers (name, group_name) 
+        VALUES (${l.name}, ${l.group}) 
+        ON CONFLICT (name) DO UPDATE SET group_name = EXCLUDED.group_name
+      `;
+    }
+    console.log('✅ Ledgers ready.');
+
     // 3. Main Tables
     await sql`
       CREATE TABLE IF NOT EXISTS paddy_inwards (

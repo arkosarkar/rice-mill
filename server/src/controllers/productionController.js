@@ -69,12 +69,22 @@ async function createProduction(req, res) {
 
       const paddyStockLedger = getId('Stock in Hand - Paddy');
       const riceStockLedger  = getId('Stock in Hand - Rice');
+      const directLabourLedger = getId('Direct Labour - Cleaning'); // Using existing labour ledger
+      const cashLedger = getId('Cash in Hand');
 
       if (totalValue > 0 && riceStockLedger && paddyStockLedger) {
         await txSql`
           INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
           VALUES (${body.processDate}, 'Journal', ${'VAL-' + prodResult.id}, ${riceStockLedger}, ${paddyStockLedger}, ${totalValue}, ${`Stock Value Shift: Milling Batch ${prodResult.production_no}`}, 'PRODUCTION', ${prodResult.id})
         `;
+      }
+
+      if (toNumber(body.labourCost) > 0 && directLabourLedger && cashLedger) {
+        await txSql`
+          INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${body.processDate}, 'Payment', ${'LAB-PROD-' + prodResult.id}, ${directLabourLedger}, ${cashLedger}, ${toNumber(body.labourCost)}, ${`Milling Labour: Batch ${prodResult.production_no}`}, 'PRODUCTION', ${prodResult.id})
+        `;
+        await txSql`UPDATE ledgers SET current_balance = current_balance - ${toNumber(body.labourCost)} WHERE id = ${cashLedger}`;
       }
 
       // 3. Stock Movements
