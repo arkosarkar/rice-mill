@@ -7,7 +7,6 @@ function toNumber(value) {
 }
 
 async function createCleaning(req, res) {
-  const client = await sql.pool.connect();
   try {
     const body = req.body || {};
     const inputWeightKg  = toNumber(body.rawPaddyInputKg);
@@ -28,72 +27,81 @@ async function createCleaning(req, res) {
       });
     }
 
-    await client.query('BEGIN');
-
-    // 1. Insert the cleaning batch record
     const wastePercent      = inputWeightKg > 0 ? (totalWasteKg / inputWeightKg) * 100 : 0;
     const efficiencyPercent = inputWeightKg > 0 ? (cleanOutputKg / inputWeightKg) * 100 : 0;
     const isRecleaningNeeded = body.readyForMilling === 'No - Needs Re-cleaning';
     const batchStatus = isRecleaningNeeded ? 'requires_recleaning' : 'completed';
 
-    const insertResult = await client.query(`
-      INSERT INTO cleaning_batches (
-        process_date, shift, inward_ref, paddy_variety, source_godown,
-        input_weight_kg, input_bags, pre_cleaning_moisture_percent,
-        stones_kg, dust_kg, straw_kg, other_waste_kg, total_waste_kg, waste_percent,
-        clean_output_kg, output_bags, post_cleaning_moisture_percent,
-        destination_godown, destination_stack, efficiency_percent,
-        ready_for_milling, impurity_after_percent, labour_count,
-        labour_cost, power_consumption, remarks, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27) 
-      RETURNING *`,
-      [body.processDate, body.shift, body.inwardRef, body.paddyVariety, body.sourceGodown, inputWeightKg, toNumber(body.inputBags), toNumber(body.preCleaningMoisturePercent), stonesKg, dustKg, strawKg, otherWasteKg, totalWasteKg, wastePercent, cleanOutputKg, toNumber(body.outputBags), toNumber(body.postCleaningMoisturePercent), body.destinationGodown, body.destinationStack, efficiencyPercent, body.readyForMilling, toNumber(body.impurityAfter), toNumber(body.labourCount), labourCost, powerCost, body.remarks, batchStatus]
-    );
-    const savedResult = insertResult.rows[0];
+    const result = await sql.begin(async txSql => {
+      // 1. Insert the cleaning batch record
+      const insertResult = await txSql`
+        INSERT INTO cleaning_batches (
+          process_date, shift, inward_ref, paddy_variety, source_godown,
+          input_weight_kg, input_bags, pre_cleaning_moisture_percent,
+          stones_kg, dust_kg, straw_kg, other_waste_kg, total_waste_kg, waste_percent,
+          clean_output_kg, output_bags, post_cleaning_moisture_percent,
+          destination_godown, destination_stack, efficiency_percent,
+          ready_for_milling, impurity_after_percent, labour_count,
+          labour_cost, power_consumption, remarks, status
+        ) VALUES (
+          ${body.processDate}, ${body.shift}, ${body.inwardRef}, ${body.paddyVariety}, ${body.sourceGodown}, 
+          ${inputWeightKg}, ${toNumber(body.inputBags)}, ${toNumber(body.preCleaningMoisturePercent)}, 
+          ${stonesKg}, ${dustKg}, ${strawKg}, ${otherWasteKg}, ${totalWasteKg}, ${wastePercent}, 
+          ${cleanOutputKg}, ${toNumber(body.outputBags)}, ${toNumber(body.postCleaningMoisturePercent)}, 
+          ${body.destinationGodown}, ${body.destinationStack}, ${efficiencyPercent}, ${body.readyForMilling}, 
+          ${toNumber(body.impurityAfter)}, ${toNumber(body.labourCount)}, ${labourCost}, ${powerCost}, 
+          ${body.remarks}, ${batchStatus}
+        ) 
+        RETURNING *
+      `;
+      const savedResult = insertResult[0];
 
-    // 2. Process Costing Sync (Accounting)
-    const getId = async (name) => (await client.query('SELECT id FROM ledgers WHERE name = $1', [name])).rows[0]?.id;
-    const labourLedgerId = await getId('Direct Labour - Cleaning');
-    const powerLedgerId  = await getId('Electricity/Fuel Expense');
-    const cashLedgerId   = await getId('Cash in Hand');
+      // 2. Process Costing Sync (Accounting)
+      const ledgers = await txSql`SELECT id, name FROM ledgers WHERE name IN (${'Direct Labour - Cleaning'}, ${'Electricity/Fuel Expense'}, ${'Cash in Hand'})`;
+      const getId = (name) => ledgers.find(l => l.name === name)?.id;
 
-    if (labourCost > 0) {
-      await client.query(`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        VALUES ($1, 'Payment', $2, $3, $4, $5, $6, 'CLEANING', $7)`,
-        [body.processDate, 'LAB-' + savedResult.id, labourLedgerId, cashLedgerId, labourCost, `Labour Wages: Cleaning Batch ${savedResult.id}`, savedResult.id]);
-      await client.query('UPDATE ledgers SET current_balance = current_balance - $1 WHERE id = $2', [labourCost, cashLedgerId]);
-    }
-    if (powerCost > 0) {
-      await client.query(`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        VALUES ($1, 'Payment', $2, $3, $4, $5, $6, 'CLEANING', $7)`,
-        [body.processDate, 'PWR-' + savedResult.id, powerLedgerId, cashLedgerId, powerCost, `Power Expense: Cleaning Batch ${savedResult.id}`, savedResult.id]);
-      await client.query('UPDATE ledgers SET current_balance = current_balance - $1 WHERE id = $2', [powerCost, cashLedgerId]);
-    }
+      const labourLedgerId = getId('Direct Labour - Cleaning');
+      const powerLedgerId  = getId('Electricity/Fuel Expense');
+      const cashLedgerId   = getId('Cash in Hand');
 
-    // 3. Stock Movements
-    const srcGodown = body.sourceGodown || 'Main Godown';
-    const dstGodown = body.destinationGodown || 'Processing Tank';
-    
-    if (body.inputType === 'Re-clean') {
-      await updateStock(client, 'paddy', body.paddyVariety, 'Raw Paddy', srcGodown, toNumber(body.inputBags), inputWeightKg, 'REMOVE', true, body.inwardRef);
-    } else {
-      await moveStock(client, srcGodown, 'Processing Tank', 'paddy', body.paddyVariety, 'Raw Paddy', inputWeightKg, toNumber(body.inputBags), 'CLEANING', 'Paddy moved for sorting');
-    }
-    
-    if (isRecleaningNeeded) {
-      await updateStock(client, 'paddy', body.paddyVariety, 'Raw Paddy', dstGodown, toNumber(body.outputBags), cleanOutputKg, 'ADD', true, body.inwardRef);
-    } else {
-      await updateStock(client, 'paddy', body.paddyVariety, 'Cleaned Paddy', dstGodown, toNumber(body.outputBags), cleanOutputKg, 'ADD', false);
-    }
+      if (labourCost > 0 && labourLedgerId && cashLedgerId) {
+        await txSql`
+          INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${body.processDate}, 'Payment', ${'LAB-' + savedResult.id}, ${labourLedgerId}, ${cashLedgerId}, ${labourCost}, ${`Labour Wages: Cleaning Batch ${savedResult.id}`}, 'CLEANING', ${savedResult.id})
+        `;
+        await txSql`UPDATE ledgers SET current_balance = current_balance - ${labourCost} WHERE id = ${cashLedgerId}`;
+      }
+      if (powerCost > 0 && powerLedgerId && cashLedgerId) {
+        await txSql`
+          INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${body.processDate}, 'Payment', ${'PWR-' + savedResult.id}, ${powerLedgerId}, ${cashLedgerId}, ${powerCost}, ${`Power Expense: Cleaning Batch ${savedResult.id}`}, 'CLEANING', ${savedResult.id})
+        `;
+        await txSql`UPDATE ledgers SET current_balance = current_balance - ${powerCost} WHERE id = ${cashLedgerId}`;
+      }
 
-    await client.query('COMMIT');
-    res.status(201).json({ cleaning: savedResult, message: 'Cleaning batch and accounting synced successfully.' });
+      // 3. Stock Movements
+      const srcGodown = body.sourceGodown || 'Main Godown';
+      const dstGodown = body.destinationGodown || 'Processing Tank';
+      
+      if (body.inputType === 'Re-clean') {
+        await updateStock(txSql, 'paddy', body.paddyVariety, 'Raw Paddy', srcGodown, toNumber(body.inputBags), inputWeightKg, 'REMOVE', true, body.inwardRef);
+      } else {
+        await moveStock(txSql, srcGodown, 'Processing Tank', 'paddy', body.paddyVariety, 'Raw Paddy', inputWeightKg, toNumber(body.inputBags), 'CLEANING', 'Paddy moved for sorting');
+      }
+      
+      if (isRecleaningNeeded) {
+        await updateStock(txSql, 'paddy', body.paddyVariety, 'Raw Paddy', dstGodown, toNumber(body.outputBags), cleanOutputKg, 'ADD', true, body.inwardRef);
+      } else {
+        await updateStock(txSql, 'paddy', body.paddyVariety, 'Cleaned Paddy', dstGodown, toNumber(body.outputBags), cleanOutputKg, 'ADD', false);
+      }
+
+      return savedResult;
+    });
+
+    res.status(201).json({ cleaning: result, message: 'Cleaning batch and accounting synced successfully.' });
   } catch (error) {
-    await client.query('ROLLBACK');
     console.error('Cleaning Sync Error:', error);
     res.status(500).json({ message: 'Failed to sync cleaning batch.', error: error.message });
-  } finally {
-    client.release();
   }
 }
 

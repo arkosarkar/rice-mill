@@ -7,7 +7,6 @@ function toNumber(value) {
 }
 
 async function createProduction(req, res) {
-  const client = await sql.pool.connect();
   try {
     const body = req.body || {};
     const paddyInputKg       = toNumber(body.paddyInputKg);
@@ -27,67 +26,75 @@ async function createProduction(req, res) {
       return res.status(400).json({ message: `Logic Error: Total Output cannot exceed Input.` });
     }
 
-    await client.query('BEGIN');
-
-    // 1. Insert Production Record
     const riceYieldPercent = paddyInputKg > 0 ? (totalRiceOutputKg / paddyInputKg) * 100 : 0;
-    const inserted = await client.query(`
-      INSERT INTO productions (
-        process_date, production_no, shift, cleaning_batch_ref,
-        paddy_variety, rice_type, paddy_input_kg, input_bags,
-        input_moisture_percent, machine, polisher, grader,
-        operator_name, start_time, end_time, premium_rice_kg,
-        grade_a_rice_kg, grade_b_rice_kg, broken_rice_kg,
-        bran_kg, husk_kg, other_waste_kg, rice_storage_godown, input_godown,
-        rice_bags, bag_weight_kg, labour_count, labour_cost,
-        power_consumption, yield_percent, remarks
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31) 
-      RETURNING *`,
-      [body.processDate, body.productionNo, body.shift, body.cleaningBatchRef, body.paddyVariety, body.riceType, paddyInputKg, toNumber(body.inputBags), toNumber(body.inputMoisturePercent), body.machine, body.polisher, body.grader, body.operatorName, body.startTime || null, body.endTime || null, premiumRiceKg, gradeARiceKg, gradeBRiceKg, brokenRiceKg, branKg, huskKg, otherWasteKg, body.riceStorageGodown, body.inputGodown || 'Processing Tank', riceBags, bagWeightKg, toNumber(body.labourCount), toNumber(body.labourCost), toNumber(body.powerConsumption), riceYieldPercent, body.remarks]
-    );
-    const prodResult = inserted.rows[0];
 
-    // 2. Accounting Sync: Stock Value Shift
-    // We estimate value shift: Paddy Cost -> Rice Asset
-    // For this implementation, we use the purchase rate of the variety if available, or a default 30/kg
-    const rateRes = await client.query('SELECT rate_per_kg FROM paddy_inwards WHERE paddy_variety = $1 ORDER BY created_at DESC LIMIT 1', [body.paddyVariety]);
-    const paddyRate = Number(rateRes.rows[0]?.rate_per_kg || 30);
-    const totalValue = paddyInputKg * paddyRate;
+    const result = await sql.begin(async txSql => {
+      // 1. Insert Production Record
+      const inserted = await txSql`
+        INSERT INTO productions (
+          process_date, production_no, shift, cleaning_batch_ref,
+          paddy_variety, rice_type, paddy_input_kg, input_bags,
+          input_moisture_percent, machine, polisher, grader,
+          operator_name, start_time, end_time, premium_rice_kg,
+          grade_a_rice_kg, grade_b_rice_kg, broken_rice_kg,
+          bran_kg, husk_kg, other_waste_kg, rice_storage_godown, input_godown,
+          rice_bags, bag_weight_kg, labour_count, labour_cost,
+          power_consumption, yield_percent, remarks
+        ) VALUES (
+          ${body.processDate}, ${body.productionNo}, ${body.shift}, ${body.cleaningBatchRef}, 
+          ${body.paddyVariety}, ${body.riceType}, ${paddyInputKg}, ${toNumber(body.inputBags)}, 
+          ${toNumber(body.inputMoisturePercent)}, ${body.machine}, ${body.polisher}, ${body.grader}, 
+          ${body.operatorName}, ${body.startTime || null}, ${body.endTime || null}, ${premiumRiceKg}, 
+          ${gradeARiceKg}, ${gradeBRiceKg}, ${brokenRiceKg}, 
+          ${branKg}, ${huskKg}, ${otherWasteKg}, ${body.riceStorageGodown}, ${body.inputGodown || 'Processing Tank'}, 
+          ${riceBags}, ${bagWeightKg}, ${toNumber(body.labourCount)}, ${toNumber(body.labourCost)}, 
+          ${toNumber(body.powerConsumption)}, ${riceYieldPercent}, ${body.remarks}
+        ) 
+        RETURNING *
+      `;
+      const prodResult = inserted[0];
 
-    const getId = async (name) => (await client.query('SELECT id FROM ledgers WHERE name = $1', [name])).rows[0]?.id;
-    const paddyStockLedger = await getId('Stock in Hand - Paddy');
-    const riceStockLedger  = await getId('Stock in Hand - Rice');
+      // 2. Accounting Sync: Stock Value Shift
+      const rateRes = await txSql`SELECT rate_per_kg FROM paddy_inwards WHERE paddy_variety = ${body.paddyVariety} ORDER BY created_at DESC LIMIT 1`;
+      const paddyRate = Number(rateRes[0]?.rate_per_kg || 30);
+      const totalValue = paddyInputKg * paddyRate;
 
-    if (totalValue > 0) {
-      await client.query(`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        VALUES ($1, 'Journal', $2, $3, $4, $5, $6, 'PRODUCTION', $7)`,
-        [body.processDate, 'VAL-' + prodResult.id, riceStockLedger, paddyStockLedger, totalValue, `Stock Value Shift: Milling Batch ${prodResult.production_no}`, prodResult.id]);
-    }
+      const ledgers = await txSql`SELECT id, name FROM ledgers WHERE name IN (${'Stock in Hand - Paddy'}, ${'Stock in Hand - Rice'})`;
+      const getId = (name) => ledgers.find(l => l.name === name)?.id;
 
-    // 3. Stock Movements
-    const inputGodown = body.inputGodown || 'Processing Tank';
-    const riceGodown  = body.riceStorageGodown || 'Finished Rice Godown';
+      const paddyStockLedger = getId('Stock in Hand - Paddy');
+      const riceStockLedger  = getId('Stock in Hand - Rice');
 
-    await moveStock(client, inputGodown, null, 'paddy', body.paddyVariety, 'Cleaned Paddy', paddyInputKg, toNumber(body.inputBags), 'PRODUCTION_INPUT', 'Milling started');
+      if (totalValue > 0 && riceStockLedger && paddyStockLedger) {
+        await txSql`
+          INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${body.processDate}, 'Journal', ${'VAL-' + prodResult.id}, ${riceStockLedger}, ${paddyStockLedger}, ${totalValue}, ${`Stock Value Shift: Milling Batch ${prodResult.production_no}`}, 'PRODUCTION', ${prodResult.id})
+        `;
+      }
 
-    if (totalRiceOutputKg > 0) {
-      await moveStock(client, null, riceGodown, 'finished_rice', body.paddyVariety, body.riceType || 'Milled Rice', totalRiceOutputKg, riceBags, 'PRODUCTION_OUTPUT', 'Finished Rice stored', false, prodResult.production_no);
-    }
-    if (branKg > 0) {
-      await moveStock(client, null, 'By-Product Godown', 'by_product', body.paddyVariety, 'Rice Bran', branKg, 0, 'PRODUCTION_OUTPUT', 'Bran stored');
-    }
-    if (huskKg > 0) {
-      await moveStock(client, null, 'By-Product Godown', 'by_product', body.paddyVariety, 'Rice Husk', huskKg, 0, 'PRODUCTION_OUTPUT', 'Husk stored');
-    }
+      // 3. Stock Movements
+      const inputGodown = body.inputGodown || 'Processing Tank';
+      const riceGodown  = body.riceStorageGodown || 'Finished Rice Godown';
 
-    await client.query('COMMIT');
-    res.status(201).json({ production: prodResult, message: 'Production batch and accounting synced successfully.' });
+      await moveStock(txSql, inputGodown, null, 'paddy', body.paddyVariety, 'Cleaned Paddy', paddyInputKg, toNumber(body.inputBags), 'PRODUCTION_INPUT', 'Milling started');
+
+      if (totalRiceOutputKg > 0) {
+        await moveStock(txSql, null, riceGodown, 'finished_rice', body.paddyVariety, body.riceType || 'Milled Rice', totalRiceOutputKg, riceBags, 'PRODUCTION_OUTPUT', 'Finished Rice stored', false, prodResult.production_no);
+      }
+      if (branKg > 0) {
+        await moveStock(txSql, null, 'By-Product Godown', 'by_product', body.paddyVariety, 'Rice Bran', branKg, 0, 'PRODUCTION_OUTPUT', 'Bran stored');
+      }
+      if (huskKg > 0) {
+        await moveStock(txSql, null, 'By-Product Godown', 'by_product', body.paddyVariety, 'Rice Husk', huskKg, 0, 'PRODUCTION_OUTPUT', 'Husk stored');
+      }
+
+      return prodResult;
+    });
+
+    res.status(201).json({ production: result, message: 'Production batch and accounting synced successfully.' });
   } catch (error) {
-    await client.query('ROLLBACK');
     console.error('Production Sync Error:', error);
     res.status(500).json({ message: 'Failed to sync production batch.', error: error.message });
-  } finally {
-    client.release();
   }
 }
 

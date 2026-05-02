@@ -53,10 +53,9 @@ async function createSale(req, res) {
     const balanceDue = Math.max(0, grandTotal - amountReceived);
 
     const paymentStatus = balanceDue === 0 ? 'Paid' : (amountReceived > 0 ? 'Partial Payment' : 'Unpaid');
-
     const cashBankName = (body.paymentMode || '').toLowerCase().includes('bank') ? 'SBI - Main Account' : 'Cash in Hand';
 
-    // Step 1: Fetch product details to ensure we have variety/rice_type/godown for updateStock
+    // Step 1: Fetch product details
     const productRows = await sql`SELECT * FROM rice_stocks WHERE id = ${productId}`;
     if (productRows.length === 0) {
       return res.status(404).json({ message: 'Product not found in stock.' });
@@ -64,10 +63,15 @@ async function createSale(req, res) {
     const product = productRows[0];
     const invoiceNo = body.invoiceNo;
 
-    // Step 2: Insert Sale, Ledgers, and Transactions (all in one SQL call for consistency)
-    // Note: Stock update is removed from this CTE as it's now handled by updateStock()
-    const result = await sql`
-      WITH inserted_sale AS (
+    // Step 2: Transaction for Sale and Accounting
+    const result = await sql.begin(async txSql => {
+      // Check stock
+      if (Number(product.available_weight_kg) < quantityKg) {
+        throw new Error(`Insufficient stock. Available: ${product.available_weight_kg} Kg`);
+      }
+
+      // Insert Sale
+      const saleResult = await txSql`
         INSERT INTO sales (
           invoice_no, invoice_date, customer_name, contact_number, address,
           gst_number, customer_state, billing_address, shipping_address, sale_type, hsn_sac,
@@ -87,128 +91,61 @@ async function createSale(req, res) {
           ${product.godown}, ${body.remarks}, ${grandTotal}
         )
         RETURNING *
-      ),
-      sales_ledger AS (
-        INSERT INTO ledgers (name, group_name) 
-        VALUES ('Sales Account', 'Sales') 
-        ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name 
-        RETURNING id
-      ),
-      gst_payable_ledger AS (
-        INSERT INTO ledgers (name, group_name) 
-        VALUES ('GST Payable', 'Current Liabilities') 
-        ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name 
-        RETURNING id
-      ),
-      customer_ledger AS (
-        INSERT INTO ledgers (name, group_name) 
-        VALUES (${body.customerName}, 'Debtors') 
-        ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name 
-        RETURNING id
-      ),
-      new_party AS (
+      `;
+
+      // Ledgers
+      await txSql`INSERT INTO ledgers (name, group_name) VALUES ('Sales Account', 'Sales') ON CONFLICT (name) DO NOTHING`;
+      await txSql`INSERT INTO ledgers (name, group_name) VALUES ('GST Payable', 'Current Liabilities') ON CONFLICT (name) DO NOTHING`;
+      await txSql`INSERT INTO ledgers (name, group_name) VALUES (${body.customerName}, 'Debtors') ON CONFLICT (name) DO NOTHING`;
+      await txSql`INSERT INTO ledgers (name, group_name) VALUES (${cashBankName}, 'Cash-in-hand') ON CONFLICT (name) DO NOTHING`;
+
+      const ledgers = await txSql`SELECT id, name FROM ledgers WHERE name IN (${'Sales Account'}, ${'GST Payable'}, ${body.customerName}, ${cashBankName})`;
+      const getId = (name) => ledgers.find(l => l.name === name)?.id;
+
+      const salesLedgerId = getId('Sales Account');
+      const gstLedgerId   = getId('GST Payable');
+      const customerLedgerId = getId(body.customerName);
+      const cashLedgerId = getId(cashBankName);
+
+      // Party Link
+      await txSql`
         INSERT INTO parties (name, type, mobile_number, address, state, gst_number, gst_status, ledger_id)
-        SELECT 
-           ${body.customerName}, 
-           'Customer', 
-           ${body.contactNumber || ''}, 
-           ${body.billingAddress || body.address || ''}, 
-           ${stateStr},
-           ${body.gstNumber || ''}, 
-           CASE WHEN COALESCE(${body.gstNumber}, '') != '' THEN 'Registered' ELSE 'Unregistered' END, 
-           (SELECT id FROM customer_ledger)
+        SELECT ${body.customerName}, 'Customer', ${body.contactNumber || ''}, ${body.billingAddress || body.address || ''}, ${stateStr}, ${body.gstNumber || ''}, 
+               CASE WHEN COALESCE(${body.gstNumber}, '') != '' THEN 'Registered' ELSE 'Unregistered' END, ${customerLedgerId}
         WHERE NOT EXISTS (SELECT 1 FROM parties WHERE name = ${body.customerName})
-        RETURNING id
-      ),
-      update_ledger_link AS (
-        UPDATE ledgers SET linked_party_id = (SELECT id FROM new_party)
-        WHERE id = (SELECT id FROM customer_ledger) 
-          AND EXISTS (SELECT 1 FROM new_party)
-        RETURNING id
-      ),
-      cash_bank_ledger AS (
-        INSERT INTO ledgers (name, group_name) 
-        VALUES (${cashBankName}, 'Cash-in-hand') 
-        ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name 
-        RETURNING id
-      ),
-      txn1_sales AS (
-        INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        SELECT 
-          inserted_sale.invoice_date, 'Journal', 'JRN-SALE-' || inserted_sale.invoice_no, 
-          (SELECT id FROM customer_ledger), 
-          (SELECT id FROM sales_ledger), 
-          inserted_sale.taxable_value, 
-          'Rice Sale Revenue: ' || inserted_sale.invoice_no, 
-          'SALE', 
-          inserted_sale.invoice_no
-        FROM inserted_sale
-        WHERE inserted_sale.taxable_value > 0
-        RETURNING id
-      ),
-      txn1_gst AS (
-        INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        SELECT 
-          inserted_sale.invoice_date, 'Journal', 'JRN-GST-' || inserted_sale.invoice_no, 
-          (SELECT id FROM customer_ledger), 
-          (SELECT id FROM gst_payable_ledger), 
-          inserted_sale.tax_amount, 
-          'Output GST for Invoice: ' || inserted_sale.invoice_no, 
-          'SALE', 
-          inserted_sale.invoice_no
-        FROM inserted_sale
-        WHERE inserted_sale.tax_amount > 0
-        RETURNING id
-      ),
-      txn2 AS (
-        INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        SELECT 
-          inserted_sale.invoice_date, 'Receipt', 'VCH-REC-' || inserted_sale.invoice_no, 
-          (SELECT id FROM cash_bank_ledger), 
-          (SELECT id FROM customer_ledger), 
-          inserted_sale.amount_received, 
-          'Receipt for Invoice: ' || inserted_sale.invoice_no, 
-          'SALE', 
-          inserted_sale.invoice_no
-        FROM inserted_sale
-        WHERE inserted_sale.amount_received > 0
-        RETURNING id
-      )
-      SELECT * FROM inserted_sale;
+      `;
+
+      // Transactions
+      if (taxableValue > 0 && customerLedgerId && salesLedgerId) {
+        await txSql`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${body.invoiceDate}, 'Journal', ${'JRN-SALE-' + invoiceNo}, ${customerLedgerId}, ${salesLedgerId}, ${taxableValue}, ${'Rice Sale Revenue: ' + invoiceNo}, 'SALE', ${invoiceNo})`;
+      }
+      if (taxAmount > 0 && customerLedgerId && gstLedgerId) {
+        await txSql`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${body.invoiceDate}, 'Journal', ${'JRN-GST-' + invoiceNo}, ${customerLedgerId}, ${gstLedgerId}, ${taxAmount}, ${'Output GST for Invoice: ' + invoiceNo}, 'SALE', ${invoiceNo})`;
+      }
+      if (amountReceived > 0 && cashLedgerId && customerLedgerId) {
+        await txSql`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${body.invoiceDate}, 'Receipt', ${'VCH-REC-' + invoiceNo}, ${cashLedgerId}, ${customerLedgerId}, ${amountReceived}, ${'Receipt for Invoice: ' + invoiceNo}, 'SALE', ${invoiceNo})`;
+      }
+
+      // Stock Movement
+      await moveStock(txSql, product.godown, null, product.item_type, product.variety, product.rice_type, quantityKg, toNumber(body.bags), 'SALE', 'Dispatched to Customer');
+
+      return saleResult[0];
+    });
+
+    // Sync Customer Ledger Balance
+    await sql`
+      UPDATE ledgers 
+      SET current_balance = (SELECT COALESCE(SUM(balance_due), 0) FROM sales WHERE customer_name = ${body.customerName})
+      WHERE name = ${body.customerName}
     `;
 
-    // Step 3: Stock update — REMOVE the items from stock
-    try {
-      await moveStock(sql, product.godown, null, product.item_type, product.variety, product.rice_type, quantityKg, toNumber(body.bags), 'SALE', 'Dispatched to Customer');
-    } catch (stockErr) {
-      console.error('[createSale] Stock update failed — rolling back sale records:', stockErr.message);
-      await sql`DELETE FROM transactions WHERE ref_module = 'SALE' AND ref_id = ${invoiceNo}`;
-      await sql`DELETE FROM sales WHERE invoice_no = ${invoiceNo}`;
-      return res.status(400).json({ message: `Stock Error: ${stockErr.message}` });
-    }
-
-    const sale = result;
-
-    if (!sale?.length) {
-      // Either invalid productId OR insufficient stock
-      const stock = await sql`SELECT available_weight_kg FROM rice_stocks WHERE id = ${productId}`;
-      const available = stock?.[0]?.available_weight_kg ?? 0;
-      return res.status(400).json({ message: `Insufficient stock. Available: ${available} Kg` });
-    }
-    
-    // Sync Customer Ledger Balance
-    if (body.customerName) {
-      await sql`
-        UPDATE ledgers 
-        SET current_balance = (SELECT COALESCE(SUM(balance_due), 0) FROM sales WHERE customer_name = ${body.customerName})
-        WHERE name = ${body.customerName}
-      `;
-    }
-
-    res.status(201).json({ sale: sale[0], message: 'Sale created successfully.' });
+    res.status(201).json({ sale: result, message: 'Sale created successfully.' });
   } catch (error) {
     console.error('SQL Error in createSale:', error);
-    res.status(500).json({ message: 'Failed to save sale', error: error.message });
+    res.status(error.message.includes('Insufficient stock') ? 400 : 500).json({ message: 'Failed to save sale', error: error.message });
   }
 }
 

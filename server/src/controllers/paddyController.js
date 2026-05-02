@@ -21,7 +21,6 @@ async function syncFarmerBalance(farmerName) {
 }
 
 async function createPaddyInward(req, res) {
-  const client = await sql.pool.connect();
   try {
     const body = req.body || {};
     const grossWeightKg = toNumber(body.grossWeightKg);
@@ -41,91 +40,111 @@ async function createPaddyInward(req, res) {
     const inwardNo = body.inwardNo || `INW-${Date.now()}`;
     const cashBankName = (body.paymentMode || '').toLowerCase().includes('bank') ? 'SBI - Main Account' : 'Cash in Hand';
 
-    await client.query('BEGIN');
-
-    // 0. Overdraft Check for Advance
-    if (advancePaid > 0) {
-      const balRes = await client.query('SELECT current_balance FROM ledgers WHERE name = $1', [cashBankName]);
-      const currentBal = Number(balRes.rows[0]?.current_balance || 0);
-      if (advancePaid > currentBal) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ message: `Insufficient Funds: Cannot pay ₹${advancePaid} from ${cashBankName}` });
+    // Atomic Transaction using our sql.begin helper
+    const result = await sql.begin(async txSql => {
+      // 0. Overdraft Check for Advance
+      if (advancePaid > 0) {
+        const balRes = await txSql`SELECT current_balance FROM ledgers WHERE name = ${cashBankName}`;
+        const currentBal = Number(balRes[0]?.current_balance || 0);
+        if (advancePaid > currentBal) {
+          throw new Error(`Insufficient Funds: Cannot pay ₹${advancePaid} from ${cashBankName}`);
+        }
       }
-    }
 
-    // 1. Insert Paddy Inward
-    const inwardResult = await client.query(`
-      INSERT INTO paddy_inwards (
-        entry_date, entry_time, inward_no, supplier_name, contact_number, village,
-        paddy_variety, gross_weight_kg, tare_weight_kg, net_weight_kg,
-        number_of_bags, bag_weight_kg, moisture_percent, broken_percent, impurity_percent,
-        rate_per_kg, total_amount, deductions, payable_amount,
-        payment_mode, advance_paid, balance_amount,
-        vehicle_number, driver_name, transport_charges,
-        godown, lot_number, stack_number, remarks,
-        gst_rate, gst_amount
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31) 
-      RETURNING *`, 
-      [entryDate, entryTime, inwardNo, body.supplierName, body.contactNumber, body.village, body.paddyVariety, grossWeightKg, tareWeightKg, netWeightKg, toNumber(body.numberOfBags), toNumber(body.bagWeightKg), toNumber(body.moisturePercent), toNumber(body.brokenPercent), toNumber(body.impurityPercent), ratePerKg, totalAmount, deductions, payableAmount, body.paymentMode, advancePaid, balanceAmount, body.vehicleNumber, body.driverName, toNumber(body.transportCharges), body.godown, body.lotNumber, body.stackNumber, body.remarks, gstRate, gstAmount]
-    );
+      // 1. Insert Paddy Inward
+      const inwardResult = await txSql`
+        INSERT INTO paddy_inwards (
+          entry_date, entry_time, inward_no, supplier_name, contact_number, village,
+          paddy_variety, gross_weight_kg, tare_weight_kg, net_weight_kg,
+          number_of_bags, bag_weight_kg, moisture_percent, broken_percent, impurity_percent,
+          rate_per_kg, total_amount, deductions, payable_amount,
+          payment_mode, advance_paid, balance_amount,
+          vehicle_number, driver_name, transport_charges,
+          godown, lot_number, stack_number, remarks,
+          gst_rate, gst_amount
+        ) VALUES (
+          ${entryDate}, ${entryTime}, ${inwardNo}, ${body.supplierName}, ${body.contactNumber}, ${body.village}, 
+          ${body.paddyVariety}, ${grossWeightKg}, ${tareWeightKg}, ${netWeightKg}, 
+          ${toNumber(body.numberOfBags)}, ${toNumber(body.bagWeightKg)}, ${toNumber(body.moisturePercent)}, 
+          ${toNumber(body.brokenPercent)}, ${toNumber(body.impurityPercent)}, ${ratePerKg}, ${totalAmount}, 
+          ${deductions}, ${payableAmount}, ${body.paymentMode}, ${advancePaid}, ${balanceAmount}, 
+          ${body.vehicleNumber}, ${body.driverName}, ${toNumber(body.transportCharges)}, ${body.godown}, 
+          ${body.lotNumber}, ${body.stackNumber}, ${body.remarks}, ${gstRate}, ${gstAmount}
+        ) 
+        RETURNING *
+      `;
 
-    // 2. Accounting Legs
-    // Get Ledger IDs
-    const getId = async (name) => (await client.query('SELECT id FROM ledgers WHERE name = $1', [name])).rows[0]?.id;
-    const purchaseId = await getId('Paddy Purchase A/C');
-    const gstId      = await getId('Input GST A/C');
-    const dedId      = await getId('Deductions & Commission A/C');
-    const cashId     = await getId(cashBankName);
-    
-    // Ensure Vendor Ledger
-    await client.query("INSERT INTO ledgers (name, group_name) VALUES ($1, 'Creditors') ON CONFLICT (name) DO NOTHING", [body.supplierName]);
-    const vendorId = await getId(body.supplierName);
+      // 2. Accounting Legs
+      // Ensure Vendor Ledger exists
+      await txSql`
+        INSERT INTO ledgers (name, group_name) 
+        VALUES (${body.supplierName}, 'Creditors') 
+        ON CONFLICT (name) DO NOTHING
+      `;
 
-    // Leg A: Purchase (Debit Purchase A/C, Credit Vendor)
-    if (rawTotal > 0) {
-      await client.query(`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        VALUES ($1, 'Journal', $2, $3, $4, $5, $6, 'PURCHASE', $7)`, 
-        [entryDate, 'PUR-' + inwardNo, purchaseId, vendorId, rawTotal, `Paddy Purchase: ${inwardNo}`, inwardNo]);
-    }
+      // Get Ledger IDs
+      const ledgers = await txSql`SELECT id, name FROM ledgers WHERE name IN (${'Paddy Purchase A/C'}, ${'Input GST A/C'}, ${'Deductions & Commission A/C'}, ${cashBankName}, ${body.supplierName})`;
+      const getId = (name) => ledgers.find(l => l.name === name)?.id;
 
-    // Leg B: GST (Debit Input GST A/C, Credit Vendor)
-    if (gstAmount > 0) {
-      await client.query(`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        VALUES ($1, 'Journal', $2, $3, $4, $5, $6, 'PURCHASE', $7)`, 
-        [entryDate, 'GST-' + inwardNo, gstId, vendorId, gstAmount, `Input GST: ${inwardNo}`, inwardNo]);
-    }
+      const purchaseId = getId('Paddy Purchase A/C');
+      const gstId      = getId('Input GST A/C');
+      const dedId      = getId('Deductions & Commission A/C');
+      const cashId     = getId(cashBankName);
+      const vendorId   = getId(body.supplierName);
 
-    // Leg C: Deductions (Debit Vendor, Credit Deductions A/C)
-    if (deductions > 0) {
-      await client.query(`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        VALUES ($1, 'Journal', $2, $3, $4, $5, $6, 'PURCHASE', $7)`, 
-        [entryDate, 'DED-' + inwardNo, vendorId, dedId, deductions, `Deductions: ${inwardNo}`, inwardNo]);
-    }
+      // Leg A: Purchase (Debit Purchase A/C, Credit Vendor)
+      if (rawTotal > 0 && purchaseId && vendorId) {
+        await txSql`
+          INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${entryDate}, 'Journal', ${'PUR-' + inwardNo}, ${purchaseId}, ${vendorId}, ${rawTotal}, ${`Paddy Purchase: ${inwardNo}`}, 'PURCHASE', ${inwardNo})
+        `;
+      }
 
-    // Leg D: Payment (Debit Vendor, Credit Cash/Bank)
-    if (advancePaid > 0) {
-      await client.query(`INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
-        VALUES ($1, 'Payment', $2, $3, $4, $5, $6, 'PURCHASE', $7)`, 
-        [entryDate, 'PAY-' + inwardNo, vendorId, cashId, advancePaid, `Advance Paid: ${inwardNo}`, inwardNo]);
-      
-      // Update Asset Balance
-      await client.query('UPDATE ledgers SET current_balance = current_balance - $1 WHERE id = $2', [advancePaid, cashId]);
-    }
+      // Leg B: GST (Debit Input GST A/C, Credit Vendor)
+      if (gstAmount > 0 && gstId && vendorId) {
+        await txSql`
+          INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${entryDate}, 'Journal', ${'GST-' + inwardNo}, ${gstId}, ${vendorId}, ${gstAmount}, ${`Input GST: ${inwardNo}`}, 'PURCHASE', ${inwardNo})
+        `;
+      }
 
-    // Update Vendor Balance
-    await client.query('UPDATE ledgers SET current_balance = current_balance + $1 WHERE id = $2', [balanceAmount, vendorId]);
+      // Leg C: Deductions (Debit Vendor, Credit Deductions A/C)
+      if (deductions > 0 && vendorId && dedId) {
+        await txSql`
+          INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${entryDate}, 'Journal', ${'DED-' + inwardNo}, ${vendorId}, ${dedId}, ${deductions}, ${`Deductions: ${inwardNo}`}, 'PURCHASE', ${inwardNo})
+        `;
+      }
 
-    // 3. Stock Movement
-    await updateStock(client, 'paddy', body.paddyVariety, 'Raw Paddy', body.godown, toNumber(body.numberOfBags), netWeightKg, 'ADD');
+      // Leg D: Payment (Debit Vendor, Credit Cash/Bank)
+      if (advancePaid > 0 && vendorId && cashId) {
+        await txSql`
+          INSERT INTO transactions (transaction_date, voucher_type, voucher_no, debit_ledger_id, credit_ledger_id, amount, narration, ref_module, ref_id)
+          VALUES (${entryDate}, 'Payment', ${'PAY-' + inwardNo}, ${vendorId}, ${cashId}, ${advancePaid}, ${`Advance Paid: ${inwardNo}`}, 'PURCHASE', ${inwardNo})
+        `;
+        
+        // Update Asset Balance
+        await txSql`UPDATE ledgers SET current_balance = current_balance - ${advancePaid} WHERE id = ${cashId}`;
+      }
 
-    await client.query('COMMIT');
-    res.status(201).json({ inward: inwardResult.rows[0], message: 'Paddy inward and accounting synced successfully.' });
+      // Update Vendor Balance
+      if (vendorId) {
+        await txSql`UPDATE ledgers SET current_balance = current_balance + ${balanceAmount} WHERE id = ${vendorId}`;
+      }
+
+      // 3. Stock Movement
+      await updateStock(txSql, 'paddy', body.paddyVariety, 'Raw Paddy', body.godown, toNumber(body.numberOfBags), netWeightKg, 'ADD');
+
+      return inwardResult[0];
+    });
+
+    res.status(201).json({ inward: result, message: 'Paddy inward and accounting synced successfully.' });
   } catch (error) {
-    await client.query('ROLLBACK');
     console.error('Paddy Sync Error:', error);
-    res.status(500).json({ message: 'Failed to sync paddy inward.', error: error.message });
-  } finally {
-    client.release();
+    res.status(error.message.includes('Insufficient Funds') ? 400 : 500).json({ 
+      message: 'Failed to sync paddy inward.', 
+      error: error.message 
+    });
   }
 }
 
