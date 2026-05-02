@@ -93,14 +93,20 @@ async function createSale(req, res) {
         RETURNING *
       `;
 
-      // Ledgers
-      await txSql`INSERT INTO ledgers (name, group_name) VALUES ('Sales Account', 'Sales') ON CONFLICT (name) DO NOTHING`;
-      await txSql`INSERT INTO ledgers (name, group_name) VALUES ('GST Payable', 'Current Liabilities') ON CONFLICT (name) DO NOTHING`;
-      await txSql`INSERT INTO ledgers (name, group_name) VALUES (${body.customerName}, 'Debtors') ON CONFLICT (name) DO NOTHING`;
-      await txSql`INSERT INTO ledgers (name, group_name) VALUES (${cashBankName}, 'Cash-in-hand') ON CONFLICT (name) DO NOTHING`;
+      // Ledgers using ILIKE for case-insensitive matching
+      await txSql`INSERT INTO ledgers (name, group_name) SELECT 'Sales Account', 'Sales' WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE name ILIKE 'Sales Account')`;
+      await txSql`INSERT INTO ledgers (name, group_name) SELECT 'GST Payable', 'Current Liabilities' WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE name ILIKE 'GST Payable')`;
+      await txSql`INSERT INTO ledgers (name, group_name) SELECT ${body.customerName}, 'Debtors' WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE name ILIKE ${body.customerName})`;
+      await txSql`INSERT INTO ledgers (name, group_name) SELECT ${cashBankName}, 'Cash-in-hand' WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE name ILIKE ${cashBankName})`;
 
-      const ledgers = await txSql`SELECT id, name FROM ledgers WHERE name IN (${'Sales Account'}, ${'GST Payable'}, ${body.customerName}, ${cashBankName})`;
-      const getId = (name) => ledgers.find(l => l.name === name)?.id;
+      const ledgers = await txSql`
+        SELECT id, name FROM ledgers 
+        WHERE name ILIKE ${'Sales Account'} 
+           OR name ILIKE ${'GST Payable'} 
+           OR name ILIKE ${body.customerName} 
+           OR name ILIKE ${cashBankName}
+      `;
+      const getId = (name) => ledgers.find(l => l.name.toLowerCase() === name.toLowerCase())?.id;
 
       const salesLedgerId = getId('Sales Account');
       const gstLedgerId   = getId('GST Payable');

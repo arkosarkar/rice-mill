@@ -56,9 +56,14 @@ async function createCleaning(req, res) {
       `;
       const savedResult = insertResult[0];
 
-      // 2. Process Costing Sync (Accounting)
-      const ledgers = await txSql`SELECT id, name FROM ledgers WHERE name IN (${'Direct Labour - Cleaning'}, ${'Electricity/Fuel Expense'}, ${'Cash in Hand'})`;
-      const getId = (name) => ledgers.find(l => l.name === name)?.id;
+      // 2. Process Costing Sync (Accounting) using ILIKE for case-insensitive matching
+      const ledgers = await txSql`
+        SELECT id, name FROM ledgers 
+        WHERE name ILIKE ${'Direct Labour - Cleaning'} 
+           OR name ILIKE ${'Electricity/Fuel Expense'} 
+           OR name ILIKE ${'Cash in Hand'}
+      `;
+      const getId = (name) => ledgers.find(l => l.name.toLowerCase() === name.toLowerCase())?.id;
 
       const labourLedgerId = getId('Direct Labour - Cleaning');
       const powerLedgerId  = getId('Electricity/Fuel Expense');

@@ -59,8 +59,13 @@ async function createProduction(req, res) {
       const paddyRate = Number(rateRes[0]?.rate_per_kg || 30);
       const totalValue = paddyInputKg * paddyRate;
 
-      const ledgers = await txSql`SELECT id, name FROM ledgers WHERE name IN (${'Stock in Hand - Paddy'}, ${'Stock in Hand - Rice'})`;
-      const getId = (name) => ledgers.find(l => l.name === name)?.id;
+      // 2. Accounting Sync using ILIKE for case-insensitive matching
+      const ledgers = await txSql`
+        SELECT id, name FROM ledgers 
+        WHERE name ILIKE ${'Stock in Hand - Paddy'} 
+           OR name ILIKE ${'Stock in Hand - Rice'}
+      `;
+      const getId = (name) => ledgers.find(l => l.name.toLowerCase() === name.toLowerCase())?.id;
 
       const paddyStockLedger = getId('Stock in Hand - Paddy');
       const riceStockLedger  = getId('Stock in Hand - Rice');

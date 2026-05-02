@@ -44,7 +44,7 @@ async function createPaddyInward(req, res) {
     const result = await sql.begin(async txSql => {
       // 0. Overdraft Check for Advance
       if (advancePaid > 0) {
-        const balRes = await txSql`SELECT current_balance FROM ledgers WHERE name = ${cashBankName}`;
+        const balRes = await txSql`SELECT current_balance FROM ledgers WHERE name ILIKE ${cashBankName}`;
         const currentBal = Number(balRes[0]?.current_balance || 0);
         if (advancePaid > currentBal) {
           throw new Error(`Insufficient Funds: Cannot pay ₹${advancePaid} from ${cashBankName}`);
@@ -82,9 +82,16 @@ async function createPaddyInward(req, res) {
         ON CONFLICT (name) DO NOTHING
       `;
 
-      // Get Ledger IDs
-      const ledgers = await txSql`SELECT id, name FROM ledgers WHERE name IN (${'Paddy Purchase A/C'}, ${'Input GST A/C'}, ${'Deductions & Commission A/C'}, ${cashBankName}, ${body.supplierName})`;
-      const getId = (name) => ledgers.find(l => l.name === name)?.id;
+      // Get Ledger IDs using ILIKE for case-insensitive matching
+      const ledgers = await txSql`
+        SELECT id, name FROM ledgers 
+        WHERE name ILIKE ${'Paddy Purchase A/C'} 
+           OR name ILIKE ${'Input GST A/C'} 
+           OR name ILIKE ${'Deductions & Commission A/C'} 
+           OR name ILIKE ${cashBankName} 
+           OR name ILIKE ${body.supplierName}
+      `;
+      const getId = (name) => ledgers.find(l => l.name.toLowerCase() === name.toLowerCase())?.id;
 
       const purchaseId = getId('Paddy Purchase A/C');
       const gstId      = getId('Input GST A/C');
