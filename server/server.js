@@ -1,3 +1,4 @@
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
@@ -357,6 +358,17 @@ async function start() {
     }
 
     console.log('✅ Database initialization complete');
+    
+
+// 1. Frontend ki static files (CSS, JS, Images) Render ko dikhane ke liye
+app.use(express.static(path.join(__dirname, '../client/dist')));
+
+// 2. Kisi bhi route par jane par React ka main page load karne ke liye
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/dist/index.html'));
+});
+
+// --- PASTE KHATAM ---
     app.listen(port, () => {
       console.log(`🚀 RiceMill backend LIVE on port ${port}`);
     });
