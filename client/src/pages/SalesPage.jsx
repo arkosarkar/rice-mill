@@ -675,8 +675,32 @@ function SalesPage() {
   const handleEditSale = (sale) => {
     setEditingSale(sale);
     setFormInit({
-        ...sale,
-        invoiceDate: sale.invoiceDate ? sale.invoiceDate.split('T')[0] : new Date().toISOString().split('T')[0],
+      invoiceNo:      sale.invoice_no || sale.invoiceNo,
+      invoiceDate:    (sale.invoice_date || sale.invoiceDate || '').split('T')[0],
+      customerName:   sale.customer_name || sale.customerName,
+      contactNumber:  sale.contact_number || sale.contactNumber,
+      address:        sale.address,
+      gstNumber:      sale.gst_number || sale.gstNumber,
+      productId:      sale.product_id || sale.productId,
+      quantityKg:     sale.quantity_kg || sale.quantityKg,
+      ratePerKg:      sale.rate_per_kg || sale.ratePerKg,
+      bags:           sale.bags,
+      taxPercent:     sale.tax_percent || sale.taxPercent,
+      paymentMode:    sale.payment_mode || sale.paymentMode,
+      paymentStatus:  sale.payment_status || sale.paymentStatus,
+      amountReceived: sale.amount_received || sale.amountReceived,
+      deliveryDate:   (sale.delivery_date || sale.deliveryDate || '').split('T')[0],
+      vehicleNumber:  sale.vehicle_number || sale.vehicleNumber,
+      driverName:     sale.driver_name || sale.driverName,
+      deliveryStatus: sale.delivery_status || sale.deliveryStatus,
+      sourceGodown:   sale.source_godown || sale.sourceGodown,
+      remarks:        sale.remarks,
+      customerState:  sale.customer_state || sale.customerState,
+      saleType:       sale.sale_type || sale.saleType,
+      hsnSac:         sale.hsn_sac || sale.hsnSac,
+      isRcm:          sale.is_rcm || sale.isRcm,
+      billingAddress: sale.billing_address || sale.billingAddress,
+      shippingAddress: sale.shipping_address || sale.shippingAddress,
     });
     setView('form');
   };
@@ -780,9 +804,9 @@ function SalesPage() {
 
   const totalPages = Math.ceil(totalRecords / itemsPerPage);
 
-  const totalRevenue = salesList.reduce((s, x) => s + toNumber(x.grandTotal), 0);
-  const totalPaid    = salesList.reduce((s, x) => s + toNumber(x.amountReceived), 0);
-  const totalDue     = salesList.reduce((s, x) => s + toNumber(x.balanceDue), 0);
+  const totalRevenue = salesList.reduce((s, x) => s + toNumber(x.grand_total || x.grandTotal), 0);
+  const totalPaid    = salesList.reduce((s, x) => s + toNumber(x.amount_received || x.amountReceived), 0);
+  const totalDue     = salesList.reduce((s, x) => s + toNumber(x.balance_due || x.balanceDue), 0);
 
   return (
     <PageContainer>
@@ -877,23 +901,23 @@ function SalesPage() {
                   <tr key={s.id} className="hover:bg-slate-50/50 group transition-all duration-200">
                     <td className="px-6 py-5 whitespace-nowrap">
                       <span className="text-sm font-black text-indigo-600 italic tracking-tighter flex items-center gap-2">
-                        <DocumentTextIcon className="h-4 w-4" />{s.invoiceNo}
+                        <DocumentTextIcon className="h-4 w-4" />{s.invoice_no || s.invoiceNo}
                       </span>
                     </td>
-                    <td className="px-6 py-5 whitespace-nowrap text-sm text-slate-500 font-bold">{s.invoiceDate ? new Date(s.invoiceDate).toLocaleDateString('en-IN') : '-'}</td>
-                    <td className="px-6 py-5 whitespace-nowrap text-sm font-black text-slate-900">{s.customerName}</td>
+                    <td className="px-6 py-5 whitespace-nowrap text-sm text-slate-500 font-bold">{(s.invoice_date || s.invoiceDate) ? new Date(s.invoice_date || s.invoiceDate).toLocaleDateString('en-IN') : '-'}</td>
+                    <td className="px-6 py-5 whitespace-nowrap text-sm font-black text-slate-900">{s.customer_name || s.customerName}</td>
                     <td className="px-6 py-5 whitespace-nowrap text-xs font-black text-slate-500 uppercase italic">{s.variety}</td>
-                    <td className="px-6 py-5 whitespace-nowrap text-sm font-black text-slate-900 tabular-nums text-right">{toNumber(s.quantityKg).toFixed(2)}</td>
-                    <td className="px-6 py-5 whitespace-nowrap text-sm font-black text-slate-900 tabular-nums">{fmt(s.grandTotal)}</td>
-                    <td className="px-6 py-5 whitespace-nowrap text-sm font-black text-emerald-600 tabular-nums">{fmt(s.amountReceived)}</td>
+                    <td className="px-6 py-5 whitespace-nowrap text-sm font-black text-slate-900 tabular-nums text-right">{toNumber(s.quantity_kg || s.quantityKg).toFixed(2)}</td>
+                    <td className="px-6 py-5 whitespace-nowrap text-sm font-black text-slate-900 tabular-nums">{fmt(s.grand_total || s.grandTotal)}</td>
+                    <td className="px-6 py-5 whitespace-nowrap text-sm font-black text-emerald-600 tabular-nums">{fmt(s.amount_received || s.amountReceived)}</td>
                     <td className="px-6 py-5 whitespace-nowrap">
-                      {statusBadge(s.paymentStatus)}
+                      {statusBadge(s.payment_status || s.paymentStatus)}
                     </td>
                     <td className="px-6 py-5 whitespace-nowrap">
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all transform translate-x-4 group-hover:translate-x-0">
                         <button className="p-2.5 text-slate-400 hover:text-amber-600 hover:bg-white hover:shadow-xl rounded-xl" onClick={() => handleEditSale(s)}><PencilSquareIcon className="h-4 w-4" /></button>
                         <button className="p-2.5 text-slate-400 hover:text-indigo-600 hover:bg-white hover:shadow-xl rounded-xl" onClick={() => setInvoiceSale(s)}><PrinterIcon className="h-4 w-4" /></button>
-                        {toNumber(s.balanceDue) > 0 && <button className="p-2.5 text-slate-400 hover:text-emerald-600 hover:bg-white hover:shadow-xl rounded-xl" onClick={() => setCollectSale(s)}><BanknotesIcon className="h-4 w-4" /></button>}
+                        {toNumber(s.balance_due || s.balanceDue) > 0 && <button className="p-2.5 text-slate-400 hover:text-emerald-600 hover:bg-white hover:shadow-xl rounded-xl" onClick={() => setCollectSale(s)}><BanknotesIcon className="h-4 w-4" /></button>}
                         <button className="p-2.5 text-slate-400 hover:text-rose-600 hover:bg-white hover:shadow-xl rounded-xl" onClick={() => handleDeleteSale(s)}><TrashIcon className="h-4 w-4" /></button>
                       </div>
                     </td>
