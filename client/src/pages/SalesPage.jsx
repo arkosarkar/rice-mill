@@ -97,16 +97,24 @@ const EMPTY_FORM = {
 
 // ─── INVOICE PREVIEW ──────────────────────────────────────────────────────────
 function InvoicePreview({ mill, sale }) {
-  const taxable = toNumber(sale.taxable_value || sale.taxableValue || sale.totalAmount || sale.total_amount);
+  const qty = toNumber(sale.quantity_kg || sale.quantityKg);
+  const rate = toNumber(sale.rate_per_kg || sale.ratePerKg);
+  // Calculate taxable amount directly to ensure consistency
+  const taxable = (qty > 0 && rate > 0) ? (qty * rate) : toNumber(sale.taxable_value || sale.taxableValue || sale.totalAmount || sale.total_amount);
+  
   const isLocal = (sale.customerState || sale.customer_state || 'West Bengal').trim().toLowerCase() === 'west bengal';
   const gstRate = toNumber(sale.taxPercent || sale.tax_percent);
-  const gst = toNumber(sale.taxAmount || sale.tax_amount || (taxable * gstRate / 100));
+  // Recalculate GST based on the taxable amount being displayed
+  const gst = (qty > 0 && rate > 0) ? (taxable * gstRate / 100) : toNumber(sale.taxAmount || sale.tax_amount || (taxable * gstRate / 100));
   
-  const cgst = sale.cgst_amount !== undefined ? toNumber(sale.cgst_amount) : (sale.cgst !== undefined ? toNumber(sale.cgst) : (isLocal ? gst / 2 : 0));
-  const sgst = sale.sgst_amount !== undefined ? toNumber(sale.sgst_amount) : (sale.sgst !== undefined ? toNumber(sale.sgst) : (isLocal ? gst / 2 : 0));
-  const igst = sale.igst_amount !== undefined ? toNumber(sale.igst_amount) : (sale.igst !== undefined ? toNumber(sale.igst) : (isLocal ? 0 : gst));
+  const cgst = isLocal ? gst / 2 : 0;
+  const sgst = isLocal ? gst / 2 : 0;
+  const igst = isLocal ? 0 : gst;
   const isRcm = sale.isRcm || sale.is_rcm || false;
-  const grandTotal = toNumber(sale.grandTotal || sale.grand_total);
+  
+  // Grand total should be Taxable + GST
+  const grandTotal = taxable + gst;
+  
   const invNo = sale.invoiceNo || sale.invoice_no;
   const invDate = sale.invoiceDate || sale.invoice_date;
   const custName = sale.customerName || sale.customer_name;
