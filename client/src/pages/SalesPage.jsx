@@ -675,6 +675,7 @@ function SalesPage() {
   const handleEditSale = (sale) => {
     setEditingSale(sale);
     setFormInit({
+      ...sale,
       invoiceNo:      sale.invoice_no || sale.invoiceNo,
       invoiceDate:    (sale.invoice_date || sale.invoiceDate || '').split('T')[0],
       customerName:   sale.customer_name || sale.customerName,
