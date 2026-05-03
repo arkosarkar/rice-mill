@@ -93,24 +93,37 @@ async function createSale(req, res) {
         RETURNING *
       `;
 
-      // Ledgers using ILIKE for case-insensitive matching
-      await txSql`INSERT INTO ledgers (name, group_name) SELECT 'Sales Account', 'Sales' WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE name ILIKE 'Sales Account')`;
-      await txSql`INSERT INTO ledgers (name, group_name) SELECT 'GST Payable', 'Current Liabilities' WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE name ILIKE 'GST Payable')`;
-      await txSql`INSERT INTO ledgers (name, group_name) SELECT ${body.customerName}, 'Debtors' WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE name ILIKE ${body.customerName})`;
-      await txSql`INSERT INTO ledgers (name, group_name) SELECT ${cashBankName}, 'Cash-in-hand' WHERE NOT EXISTS (SELECT 1 FROM ledgers WHERE name ILIKE ${cashBankName})`;
+      // Fetch Party to get ledger_id
+      const party = await txSql`SELECT ledger_id FROM parties WHERE name = ${body.customerName} AND (mobile_number = ${body.contactNumber} OR mobile_number IS NULL) LIMIT 1`;
+      let customerLedgerId = party[0]?.ledger_id;
 
+      if (!customerLedgerId) {
+        // Fallback: Create/Get ledger by Name - Mobile format
+        const ledgerName = body.contactNumber ? `${body.customerName} - ${body.contactNumber}` : body.customerName;
+        const existingLedger = await txSql`SELECT id FROM ledgers WHERE name ILIKE ${ledgerName}`;
+        if (existingLedger.length > 0) {
+          customerLedgerId = existingLedger[0].id;
+        } else {
+          const newLedger = await txSql`
+            INSERT INTO ledgers (name, group_name) 
+            VALUES (${ledgerName}, 'Debtors') 
+            RETURNING id
+          `;
+          customerLedgerId = newLedger[0].id;
+        }
+      }
+
+      // Ledgers using ILIKE for case-insensitive matching
       const ledgers = await txSql`
         SELECT id, name FROM ledgers 
         WHERE name ILIKE ${'Sales Account'} 
            OR name ILIKE ${'GST Payable'} 
-           OR name ILIKE ${body.customerName} 
            OR name ILIKE ${cashBankName}
       `;
       const getId = (name) => ledgers.find(l => l.name.toLowerCase() === name.toLowerCase())?.id;
 
       const salesLedgerId = getId('Sales Account');
       const gstLedgerId   = getId('GST Payable');
-      const customerLedgerId = getId(body.customerName);
       const cashLedgerId = getId(cashBankName);
 
       // Party Link

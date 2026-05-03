@@ -16,7 +16,17 @@ async function createLedger(req, res) {
 
 async function listLedgers(req, res) {
   try {
-    const items = await sql`SELECT * FROM ledgers ORDER BY name ASC`;
+    const items = await sql`
+      SELECT 
+        l.*,
+        COALESCE((SELECT SUM(CAST(amount AS NUMERIC)) FROM transactions WHERE debit_ledger_id = l.id), 0) as total_debit,
+        COALESCE((SELECT SUM(CAST(amount AS NUMERIC)) FROM transactions WHERE credit_ledger_id = l.id), 0) as total_credit,
+        COALESCE(CAST(l.opening_balance AS NUMERIC), 0) + 
+        COALESCE((SELECT SUM(CAST(amount AS NUMERIC)) FROM transactions WHERE debit_ledger_id = l.id), 0) -
+        COALESCE((SELECT SUM(CAST(amount AS NUMERIC)) FROM transactions WHERE credit_ledger_id = l.id), 0) as current_balance
+      FROM ledgers l
+      ORDER BY l.name ASC
+    `;
     res.json(items);
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch ledgers', error: error.message });

@@ -4,16 +4,65 @@ exports.getParties = async (req, res) => {
   try {
     const { type } = req.query;
     let parties;
+    
+    // Strict calculation: (Opening Bal adjusted by Type) + SUM(Debits) - SUM(Credits)
+    // Forced numeric conversion for aggregation results
+    const balanceQuery = `
+      (
+        COALESCE(CAST(p.opening_balance AS NUMERIC), 0) * (CASE WHEN p.type = 'Farmer' THEN -1 ELSE 1 END) + 
+        COALESCE((
+          SELECT SUM(CASE 
+            WHEN t.debit_ledger_id = p.ledger_id THEN CAST(t.amount AS NUMERIC) 
+            ELSE -CAST(t.amount AS NUMERIC) 
+          END)
+          FROM transactions t
+          WHERE t.debit_ledger_id = p.ledger_id OR t.credit_ledger_id = p.ledger_id
+        ), 0)
+      ) as ledger_balance,
+      (
+        SELECT COUNT(*) 
+        FROM transactions t 
+        WHERE t.debit_ledger_id = p.ledger_id OR t.credit_ledger_id = p.ledger_id
+      ) as tx_count
+    `;
+
+    let query = `SELECT p.*, ${balanceQuery} FROM parties p`;
+    let params = [];
+
     if (type && type !== 'All') {
       if (type === 'Both') {
-         parties = await sql`SELECT p.*, l.current_balance as ledger_balance FROM parties p LEFT JOIN ledgers l ON p.ledger_id = l.id WHERE p.type = 'Both' ORDER BY p.name ASC`;
+        query += ` WHERE p.type = 'Both'`;
       } else {
-         parties = await sql`SELECT p.*, l.current_balance as ledger_balance FROM parties p LEFT JOIN ledgers l ON p.ledger_id = l.id WHERE p.type = ${type} OR p.type = 'Both' ORDER BY p.name ASC`;
+        query += ` WHERE p.type = $1 OR p.type = 'Both'`;
+        params.push(type);
       }
-    } else {
-      parties = await sql`SELECT p.*, l.current_balance as ledger_balance FROM parties p LEFT JOIN ledgers l ON p.ledger_id = l.id ORDER BY p.name ASC`;
     }
-    res.json(parties);
+    
+    query += ` ORDER BY p.name ASC`;
+    
+    parties = await sql(query, ...params);
+    
+    // 3. Final Pipeline Data Formatting
+    const formattedParties = parties.map(p => {
+      const bal = parseFloat(p.ledger_balance || 0);
+      return {
+        ...p,
+        ledger_balance: Number.isNaN(bal) ? 0 : bal,
+        tx_count: parseInt(p.tx_count || 0, 10)
+      };
+    });
+
+    // Logging for Render terminal debugging
+    console.log('\n--- PARTIES DATA PIPELINE SYNC ---');
+    console.table(formattedParties.map(p => ({ 
+      name: p.name, 
+      id: p.id, 
+      ledger_id: p.ledger_id, 
+      balance: p.ledger_balance, 
+      txs: p.tx_count 
+    })));
+
+    res.json(formattedParties);
   } catch (error) {
     console.error('Error fetching parties:', error);
     res.status(500).json({ error: 'Failed to fetch parties' });

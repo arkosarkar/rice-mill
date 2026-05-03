@@ -675,8 +675,8 @@ function AccountsPage() {
         <thead><tr>{['Account Name', 'Group', 'Opening Balance', 'Debit', 'Credit', 'Closing Balance', 'Actions'].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
         <tbody>
           {filteredAccounts.map(acc => {
-            const { debit, credit, closing } = getLedgerData(acc);
-            const isDebitNature = ['assets', 'expenses', 'debtors'].includes(acc.group);
+            const closing = toNum(acc.current_balance);
+            const isDebitNature = ['assets', 'expenses', 'debtors', 'cash-in-hand', 'bank accounts'].includes((acc.group || '').toLowerCase());
             const absClosing = Math.abs(closing);
             const suffix = closing >= 0 ? (isDebitNature ? 'Dr' : 'Cr') : (isDebitNature ? 'Cr' : 'Dr');
             const color = suffix === 'Dr' ? '#2e7d32' : '#c62828';
@@ -685,8 +685,8 @@ function AccountsPage() {
                 <td style={S.td}><strong>{acc.name}</strong>{acc.type === 'farmer' && <span style={{ color: '#4caf50', marginLeft: 5 }}>🌾</span>}</td>
                 <td style={S.td}><span style={S.badge(acc.group === 'assets' ? 'blue' : acc.group === 'debtors' ? 'green' : acc.group === 'creditors' ? 'red' : 'blue')}>{acc.group.charAt(0).toUpperCase() + acc.group.slice(1)}</span></td>
                 <td style={S.td}>{fmt(acc.openingBalance)}</td>
-                <td style={S.td}>{fmt(debit)}</td>
-                <td style={S.td}>{fmt(credit)}</td>
+                <td style={S.td}>{fmt(acc.total_debit || 0)}</td>
+                <td style={S.td}>{fmt(acc.total_credit || 0)}</td>
                 <td style={{ ...S.td, fontWeight: 700, color }}>{fmt(absClosing)} {suffix}</td>
                 <td style={S.td}>
                   <div style={{ display: 'flex', gap: 6 }}>

@@ -150,9 +150,11 @@ function PartiesPage() {
                   }
                 </td>
                 <td className="px-6 py-5 whitespace-nowrap">
-                  <span className={`text-sm font-black tabular-nums ${p.ledger_balance < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                    ₹{Math.abs(p.ledger_balance || 0).toFixed(2)}
-                    <span className="text-[9px] ml-1 uppercase font-black opacity-60">{p.ledger_balance < 0 ? 'Dr' : 'Cr'}</span>
+                  <span className={`text-sm font-black tabular-nums ${p.ledger_balance > 0 ? 'text-emerald-600' : p.ledger_balance < 0 ? 'text-rose-600' : 'text-slate-400'}`}>
+                    ₹{Math.abs(p.ledger_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <span className="text-[9px] ml-1 uppercase font-black opacity-60">
+                      {p.ledger_balance > 0 ? 'DR' : p.ledger_balance < 0 ? 'CR' : ''}
+                    </span>
                   </span>
                 </td>
                 <td className="px-6 py-5 whitespace-nowrap">

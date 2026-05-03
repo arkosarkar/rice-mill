@@ -75,21 +75,33 @@ async function createPaddyInward(req, res) {
       `;
 
       // 2. Accounting Legs
-      // Ensure Vendor Ledger exists
-      await txSql`
-        INSERT INTO ledgers (name, group_name) 
-        VALUES (${body.supplierName}, 'Creditors') 
-        ON CONFLICT (name) DO NOTHING
-      `;
+      // Fetch Party to get ledger_id
+      const party = await txSql`SELECT ledger_id FROM parties WHERE name = ${body.supplierName} AND (mobile_number = ${body.contactNumber} OR mobile_number IS NULL) LIMIT 1`;
+      let vendorId = party[0]?.ledger_id;
 
-      // Get Ledger IDs using ILIKE for case-insensitive matching
+      if (!vendorId) {
+        // Fallback: Create/Get ledger by Name - Mobile format
+        const ledgerName = body.contactNumber ? `${body.supplierName} - ${body.contactNumber}` : body.supplierName;
+        const existingLedger = await txSql`SELECT id FROM ledgers WHERE name ILIKE ${ledgerName}`;
+        if (existingLedger.length > 0) {
+          vendorId = existingLedger[0].id;
+        } else {
+          const newLedger = await txSql`
+            INSERT INTO ledgers (name, group_name) 
+            VALUES (${ledgerName}, 'Creditors') 
+            RETURNING id
+          `;
+          vendorId = newLedger[0].id;
+        }
+      }
+
+      // Get other Ledger IDs
       const ledgers = await txSql`
         SELECT id, name FROM ledgers 
         WHERE name ILIKE ${'Paddy Purchase A/C'} 
            OR name ILIKE ${'Input GST A/C'} 
            OR name ILIKE ${'Deductions & Commission A/C'} 
-           OR name ILIKE ${cashBankName} 
-           OR name ILIKE ${body.supplierName}
+           OR name ILIKE ${cashBankName}
       `;
       const getId = (name) => ledgers.find(l => l.name.toLowerCase() === name.toLowerCase())?.id;
 
@@ -97,7 +109,6 @@ async function createPaddyInward(req, res) {
       const gstId      = getId('Input GST A/C');
       const dedId      = getId('Deductions & Commission A/C');
       const cashId     = getId(cashBankName);
-      const vendorId   = getId(body.supplierName);
 
       // Leg A: Purchase (Debit Purchase A/C, Credit Vendor)
       if (rawTotal > 0 && purchaseId && vendorId) {
