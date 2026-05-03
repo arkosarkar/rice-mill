@@ -17,6 +17,7 @@ const invoiceRoutes = require('./routes/invoice.routes');
 const loanRoutes = require('./routes/loan.routes');
 const partiesRoutes = require('./routes/partiesRoutes');
 const notesRoutes = require('./routes/notesRoutes');
+const usersRoutes = require('./routes/users.routes');
 
 const app = express();
 
@@ -38,6 +39,7 @@ app.use('/api/invoices', invoiceRoutes);
 app.use('/api/loans', loanRoutes);
 app.use('/api/parties', partiesRoutes);
 app.use('/api/notes', notesRoutes);
+app.use('/api/users', usersRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
