@@ -47,8 +47,8 @@ app.post('/api/auth/login', loginHandler);
 app.use('/api', requireAuth);
 
 // ✅ Task 2: User management routes (protected by requireAuth)
-app.get('/api/users', listUsersHandler);
-app.post('/api/users/register', registerUserHandler);
+const usersRoutes = require('./src/routes/users.routes');
+app.use('/api/users', usersRoutes);
 
 
 // Mount Routes
