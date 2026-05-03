@@ -386,7 +386,12 @@ async function start() {
 // 1. Frontend ki static files (CSS, JS, Images) Render ko dikhane ke liye
 app.use(express.static(path.join(__dirname, '../client/dist')));
 
-// 2. Kisi bhi route par jane par React ka main page load karne ke liye
+// 2. Health check for Render self-ping
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'active', timestamp: new Date().toISOString() });
+});
+
+// 3. Kisi bhi route par jane par React ka main page load karne ke liye
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../client/dist/index.html'));
 });
@@ -394,6 +399,26 @@ app.get('*', (req, res) => {
 // --- PASTE KHATAM ---
     app.listen(port, () => {
       console.log(`🚀 RiceMill backend LIVE on port ${port}`);
+      
+      // ✅ Self-Ping Implementation to prevent Render sleep mode
+      const BASE_URL = process.env.BASE_URL;
+      if (BASE_URL) {
+        console.log(`📡 Self-ping active: Monitoring ${BASE_URL}/api/health`);
+        setInterval(async () => {
+          try {
+            const response = await fetch(`${BASE_URL}/api/health`);
+            if (response.ok) {
+              console.log(`✅ [Self-Ping] Success: Instance is awake at ${new Date().toLocaleTimeString()}`);
+            } else {
+              console.warn(`⚠️ [Self-Ping] Warning: Received status ${response.status}`);
+            }
+          } catch (err) {
+            console.error(`❌ [Self-Ping] Error: Ping failed.`, err.message);
+          }
+        }, 13 * 60 * 1000); // 13 minutes (Render sleeps at 15 mins)
+      } else {
+        console.log('💡 Note: BASE_URL not set. Self-ping skipped (Local environment).');
+      }
     });
 
   } catch (err) {
